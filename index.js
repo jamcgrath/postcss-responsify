@@ -1,171 +1,118 @@
 /**
- * postcss-responsify
- * @description Automatically create responsive classes for all rules in @responsive {}
- * @author Derek Duncan <work@derekduncan.me>
- *
- * TODO:
- * -[x] Improve performance
- * -[] Extend @responsive with breakpoint options
- * -[] Support nested @responsive
+ * @type {import('postcss').PluginCreator}
  */
+const defaultBreakpoints = [
+	{
+		prefix: "xs-",
+		mediaQuery: "(max-width: 40em)",
+	},
+	{
+		prefix: "sm-",
+		mediaQuery: "(min-width: 40em)",
+	},
+	{
+		prefix: "md-",
+		mediaQuery: "(min-width: 52em)",
+	},
+	{
+		prefix: "lg-",
+		mediaQuery: "(min-width: 64em)",
+	},
+];
 
-const postcss = require("postcss");
-const merge = require("lodash/merge");
+function checkForOptionsBreakpoints(breakpoints) {
+	if (breakpoints && !Array.isArray(breakpoints)) {
+		throw new Error("Breakpoints must be an array");
+	}
+	if (breakpoints && breakpoints.length === 0) {
+		throw new Error("Breakpoints must not be empty");
+	}
+}
 
-/**
- * Processes a breakpoint option by creating a PostCSS @media atRule from the options
- * @param {Object} root Root postcss node
- * @param {Object} breakpointOption
- * @param {String} breakpointOption.name
- * @param {String} breakpointOption.mediaQuery
- * @return {Object} Processed breakpoint option
- */
-function processBreakpoint(root, breakpointOption) {
-	if (breakpointOption && breakpointOption !== Object(breakpointOption)) {
-		throw new Error("Breakpoint must be of type Object.");
+module.exports = (opts = {}) => {
+	// Work with options here
+	if (opts && opts.breakpoints) {
+		checkForOptionsBreakpoints(opts.breakpoints);
 	}
 
-	const processedBreakpoint = Object.assign({}, breakpointOption);
+	const breakpoints = opts.breakpoints || defaultBreakpoints;
 
-	let atRule;
-	/* search current rules to see if one exists */
-	root.walkAtRules("media", (rule) => {
-		if (rule.params !== processedBreakpoint.mediaQuery) return;
-		atRule = rule;
-	});
+	return {
+		postcssPlugin: "postcss-responsify",
+		AtRule: {
+			responsive: (atRule, { AtRule }) => {
+				const nodes = atRule.nodes;
+				const parent = atRule.parent;
 
-	/* if no rules exist, create a new one */
-	if (!atRule) {
-		atRule = postcss.atRule({
-			name: "media",
-			params: processedBreakpoint.mediaQuery,
-		});
-	}
+				//add breakpoints to the parent (root) node
+				const newBreakPoints = breakpoints.map((breakpoint) => {
+					let newAtRule;
+					const { mediaQuery, prefix } = breakpoint;
 
-	processedBreakpoint.atRule = atRule;
-	return processedBreakpoint;
-}
+					// if mediaquery exist assign it to the newAtRule else create a new one from breakpoints
+					parent.walkAtRules("media", (rule) => {
+						if (rule.params !== mediaQuery) {
+							return;
+						}
+						newAtRule = rule;
+					});
+					if (!newAtRule) {
+						newAtRule = new AtRule({
+							name: "media",
+							params: mediaQuery,
+						});
+					}
 
-/**
- * Provides defaults for the breakpoints options and processes each one
- * @param {Object} root Root postcss node
- * @param {Array} breakpointsOption Array of breakpoint objects
- * @return {Array} Processed breakpoints option
- */
-function processBreakpoints(root, breakpointsOption) {
-	if (breakpointsOption && !Array.isArray(breakpointsOption)) {
-		throw new Error("Breakpoints option must be of type Array.");
-	}
+					// copy the nodes to the newAtRule
+					if (newAtRule.params === mediaQuery) {
+						atRule.walk((node) => {
+							// check if selector is valid. Only want class selectors
+							const isValidSelector =
+								node.selector && node.selector.charAt(0) === ".";
+							if (!isValidSelector) {
+								return;
+							}
 
-	const defaultBreakpoints = [
-		{
-			prefix: "xs-",
-			mediaQuery: "(max-width: 40em)",
+							//clone the node and add the prefix to the selector
+							const clonedNode = node.clone();
+
+							// if the selector is a comma separated list of selectors split into array and checkt if prefixed
+							const selectors = clonedNode.selector
+								.replace(/\n\t/g, "")
+								.split(",");
+							const prefixLength = prefix.length;
+							const selectorStart = clonedNode.selector.slice(
+								1,
+								prefixLength + 1
+							);
+							const isAlreadyPrefixed = selectorStart === prefix;
+							if (isAlreadyPrefixed) {
+								return false;
+							}
+
+							const selectorArray = [];
+							selectors.forEach((s, index) => {
+								const sel = s.trim();
+								if (sel[0] !== ".") {
+									return;
+								}
+								let newLine = "";
+								if (index > 0) {
+									newLine = "\n";
+								}
+								selectorArray.push(`${newLine}.${prefix}${sel.slice(1)}`);
+							});
+							clonedNode.selector = selectorArray.toString();
+							newAtRule.append(clonedNode);
+						});
+					}
+					return newAtRule;
+				});
+				newBreakPoints.forEach((n) => parent.append(n));
+				atRule.replaceWith(nodes);
+			},
 		},
-		{
-			prefix: "sm-",
-			mediaQuery: "(min-width: 40em)",
-		},
-		{
-			prefix: "md-",
-			mediaQuery: "(min-width: 52em)",
-		},
-		{
-			prefix: "lg-",
-			mediaQuery: "(min-width: 64em)",
-		},
-	];
-
-	const mergedBreakpoints = merge([], defaultBreakpoints, breakpointsOption);
-	return mergedBreakpoints.map((breakpoint) =>
-		processBreakpoint(root, breakpoint)
-	);
-}
-
-/**
- * Creates a PostCSS rule based on breakpoint options
- * @param {Object} rule PostCSS rule to duplicate
- * @param {Object} prefix Prefix for selector
- * @return {Object} Responsified PostCSS rule
- */
-function createPrefixedRule(rule, prefix) {
-	const selectors = rule.selector.replace("\n\t", "").split(",");
-	const prefixLength = prefix.length;
-	const selectorStart = rule.selector.slice(1, prefixLength + 1);
-	const isAlreadyPrefixed = selectorStart === prefix;
-
-	if (isAlreadyPrefixed) return false;
-
-	const selectorArray = [];
-	selectors.forEach((s) => {
-		selectorArray.push(`.${prefix + s.substring(1)}`);
-	});
-	const selector = selectorArray.toString();
-
-	return rule.clone({
-		selector,
-	});
-}
-
-/**
- * Build a new PostCSS rule for every responsive state
- * @param {Array} breakpoints The processed breakpoints the build the rules off of
- * @return {Function}
- */
-function responsifyRule(breakpoints) {
-	/**
-	 * Closure function that handles each @responsive sub rule
-	 * @param {Object} rule
-	 */
-	return (rule) => {
-		/* insert the base rule right before the @responsive rule */
-		const root = rule.parent.parent;
-		const clone = rule.clone();
-		root.insertBefore(rule.parent, clone);
-
-		const isValidSelector = rule.selector.charAt(0) === ".";
-		if (!isValidSelector) return; /* equivilent to continue; */
-
-		/* insert each responsive rule in its breakpoint's atRule */
-		breakpoints.forEach((breakpoint) => {
-			const responsiveRule = createPrefixedRule(rule, breakpoint.prefix);
-			if (responsiveRule) {
-				breakpoint.atRule.append(responsiveRule);
-			}
-		});
 	};
-}
+};
 
-/**
- * Loops through all @responsive atRules in the css to find the rules that need to be responsified.
- * @param {Array} breakpoints The processed breakpoints to build the rules off of
- * @return {Function}
- */
-function loopResponsiveRules(breakpoints) {
-	/**
-	 * Closure function that handles each @responsive atRule
-	 * @param {Object} rule
-	 */
-	return (rule) => {
-		const subRules = rule.nodes;
-		subRules.forEach(responsifyRule(breakpoints));
-		/* remove the @responsive structure since we've built the responsive rules we need */
-		rule.remove();
-	};
-}
-
-module.exports = postcss.plugin("postcss-responsify", (opts) => {
-	const options = opts || {};
-
-	return (root) => {
-		const breakpoints = processBreakpoints(root, options.breakpoints);
-		root.walkAtRules("responsive", loopResponsiveRules(breakpoints));
-
-		/* append each breakpoint's populated atRule into the css */
-		root.append(
-			breakpoints.map((breakpoint) => {
-				return breakpoint.atRule;
-			})
-		);
-	};
-});
+module.exports.postcss = true;

@@ -28,6 +28,7 @@
   },
   "homepage": "https://github.com/derek-duncan/postcss-responsify#readme",
   "dependencies": {
+    "lodash.merge": "^4.6.2",
     "postcss": "^5.1.1"
   }
 }
